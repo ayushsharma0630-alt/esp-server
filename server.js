@@ -1,106 +1,92 @@
-#include <WiFi.h>
-#include <HTTPClient.h>
-#include "mbedtls/aes.h"
+const express = require("express");
+const crypto = require("crypto");
+const fs = require("fs");
+const path = require("path");
 
-const char* ssid = "Ayush";
-const char* password = "Galaxy21";
+const app = express();
+app.use(express.json());
 
-const char* serverUrl = "https://esp-server-t1t3.onrender.com/data";
+// 🔹 Supabase
+const SUPABASE_URL = "https://kxoztgtalloqqcaboqnb.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt4b3p0Z3RhbGxvcXFjYWJvcW5iIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYwMTY4ODIsImV4cCI6MjA5MTU5Mjg4Mn0.7qPHmJrv0j3bBfBa7ktNJ7DV3hg8gurOzzsdaXa0keY";
 
-// 🔐 AES Encrypt Function
-String aesEncrypt(String input) {
-  byte key[16] = {
-  '1','2','3','4','5','6','7','8',
-  '9','0','1','2','3','4','5','6'
-};
+// 🔐 Load private key
+const privateKey = fs.readFileSync(
+  path.join(__dirname, "private.pem"),
+  "utf8"
+);
 
-  mbedtls_aes_context aes;
-  mbedtls_aes_init(&aes);
-  mbedtls_aes_setkey_enc(&aes, key, 128);
+// 🔐 AES decrypt
+function decryptAES(encryptedHex, keyStr) {
+  const key = Buffer.from(keyStr);
+  const encryptedBuffer = Buffer.from(encryptedHex, "hex");
 
-  byte inputBlock[16] = {0};
-  byte outputBlock[16] = {0};
+  const decipher = crypto.createDecipheriv("aes-128-ecb", key, null);
+  decipher.setAutoPadding(false);
 
-  input.getBytes(inputBlock, 16);  // max 16 bytes
+  let decrypted = decipher.update(encryptedBuffer);
+  decrypted = Buffer.concat([decrypted, decipher.final()]);
 
-  mbedtls_aes_crypt_ecb(&aes, MBEDTLS_AES_ENCRYPT, inputBlock, outputBlock);
-
-  mbedtls_aes_free(&aes);
-
-  // convert to HEX string
-  String encrypted = "";
-  for (int i = 0; i < 16; i++) {
-    if (outputBlock[i] < 16) encrypted += "0";
-    encrypted += String(outputBlock[i], HEX);
-  }
-
-  return encrypted;
+  return decrypted.toString().replace(/\0/g, "").trim();
 }
 
-void setup() {
-  Serial.begin(115200);
-  delay(1000);
+// 🔹 Home
+app.get("/", (req, res) => {
+  res.send("Hybrid Encryption Server 🔐");
+});
 
-  WiFi.begin(ssid, password);
-  Serial.print("Connecting to WiFi");
+// 🔹 Main route
+app.post("/data", async (req, res) => {
+  try {
+    const { data, key } = req.body;
 
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
+    // 🔐 RSA decrypt AES key
+    const aesKey = crypto.privateDecrypt(
+      {
+        key: privateKey,
+        padding: crypto.constants.RSA_PKCS1_PADDING
+      },
+      Buffer.from(key, "base64")
+    ).toString("utf-8");
+
+    // 🔐 AES decrypt data
+    const decrypted = decryptAES(data, aesKey);
+
+    const [name, msg] = decrypted.split(",").map(v => v.trim());
+
+    console.log("Final:", { name, msg });
+
+    // 🔹 Fetch DB
+    const response = await fetch(
+      `${SUPABASE_URL}/rest/v1/messages`,
+      {
+        method: "GET",
+        headers: {
+          "apikey": SUPABASE_KEY,
+          "Authorization": `Bearer ${SUPABASE_KEY}`,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+
+    const db = await response.json();
+
+    const found = db.some(row =>
+      row.name?.toLowerCase() === name.toLowerCase() &&
+      row.message?.toString().trim() === msg
+    );
+
+    if (found) {
+      res.json({ reply: "VALID USER ✅" });
+    } else {
+      res.json({ reply: "INVALID USER ❌" });
+    }
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).send("Server Error");
   }
+});
 
-  Serial.println("\nConnected to WiFi!");
-  Serial.print("ESP IP: ");
-  Serial.println(WiFi.localIP());
-}
-
-void loop() {
-
-  if (WiFi.status() == WL_CONNECTED) {
-
-    // 🔹 Input NAME
-    Serial.println("\nEnter Name:");
-    while (!Serial.available());
-    String name = Serial.readStringUntil('\n');
-    name.trim();
-
-    // 🔹 Input ID
-    Serial.println("Enter ID:");
-    while (!Serial.available());
-    String msg = Serial.readStringUntil('\n');
-    msg.trim();
-
-    // 🔹 Combine
-    String combined = name + "," + msg;
-
-    // 🔐 Encrypt
-    String encrypted = aesEncrypt(combined);
-
-    HTTPClient http;
-    http.begin(serverUrl);
-    http.addHeader("Content-Type", "application/json");
-
-    // 🔹 Send encrypted
-    String json = "{\"message\":\"" + encrypted + "\"}";
-
-    int responseCode = http.POST(json);
-    String response = http.getString();
-
-    Serial.println("\n--- RESULT ---");
-    Serial.print("Original: ");
-    Serial.println(combined);
-
-    Serial.print("Encrypted: ");
-    Serial.println(encrypted);
-
-    Serial.print("Response Code: ");
-    Serial.println(responseCode);
-
-    Serial.print("Server Reply: ");
-    Serial.println(response);
-
-    http.end();
-
-    delay(2000);
-  }
-}
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log("Server running"));
