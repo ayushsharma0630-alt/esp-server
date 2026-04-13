@@ -8,7 +8,7 @@ app.use(express.json());
 
 // 🔹 Supabase
 const SUPABASE_URL = "https://kxoztgtalloqqcaboqnb.supabase.co";
-const SUPABASE_KEY = "PASTE_YOUR_REAL_SUPABASE_KEY_HERE";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt4b3p0Z3RhbGxvcXFjYWJvcW5iIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYwMTY4ODIsImV4cCI6MjA5MTU5Mjg4Mn0.7qPHmJrv0j3bBfBa7ktNJ7DV3hg8gurOzzsdaXa0keY";
 
 // 🔐 Load private key
 const privateKey = fs.readFileSync(
