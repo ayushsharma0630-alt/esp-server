@@ -8,7 +8,7 @@ app.use(express.json());
 
 // 🔹 Supabase
 const SUPABASE_URL = "https://kxoztgtalloqqcaboqnb.supabase.co";
-const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt4b3p0Z3RhbGxvcXFjYWJvcW5iIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYwMTY4ODIsImV4cCI6MjA5MTU5Mjg4Mn0.7qPHmJrv0j3bBfBa7ktNJ7DV3hg8gurOzzsdaXa0keY";
+const SUPABASE_KEY = "YOUR_SUPABASE_KEY";
 
 // 🔐 Load private key
 const privateKey = fs.readFileSync(
@@ -40,7 +40,7 @@ app.post("/data", async (req, res) => {
   try {
     const { device_id, token, data, key } = req.body;
 
-    // 🔐 STEP 1: DEVICE AUTH
+    // 🔥 STEP 1: FETCH DEVICES
     const deviceRes = await fetch(`${SUPABASE_URL}/rest/v1/devices`, {
       headers: {
         apikey: SUPABASE_KEY,
@@ -49,7 +49,14 @@ app.post("/data", async (req, res) => {
     });
 
     const devices = await deviceRes.json();
+    console.log("Devices DB:", devices);
 
+    // 🔥 FIX: ensure array
+    if (!Array.isArray(devices)) {
+      return res.json({ reply: "DEVICE DB ERROR ❌" });
+    }
+
+    // 🔥 STEP 2: VERIFY DEVICE
     const validDevice = devices.some(d =>
       d.device_id === device_id && d.token === token
     );
@@ -60,7 +67,7 @@ app.post("/data", async (req, res) => {
 
     console.log("Device verified ✅");
 
-    // 🔐 STEP 2: RSA decrypt AES key
+    // 🔐 STEP 3: RSA decrypt AES key
     const aesKey = crypto.privateDecrypt(
       {
         key: privateKey,
@@ -69,13 +76,13 @@ app.post("/data", async (req, res) => {
       Buffer.from(key, "base64")
     ).toString("utf-8");
 
-    // 🔐 STEP 3: AES decrypt data
+    // 🔐 STEP 4: AES decrypt data
     const decrypted = decryptAES(data, aesKey);
     const [name, msg] = decrypted.split(",").map(v => v.trim());
 
     console.log("Final:", { name, msg });
 
-    // 🔹 STEP 4: CHECK DATABASE
+    // 🔹 STEP 5: FETCH USERS
     const response = await fetch(`${SUPABASE_URL}/rest/v1/messages`, {
       headers: {
         apikey: SUPABASE_KEY,
@@ -85,6 +92,11 @@ app.post("/data", async (req, res) => {
 
     const db = await response.json();
 
+    if (!Array.isArray(db)) {
+      return res.json({ reply: "DB ERROR ❌" });
+    }
+
+    // 🔹 STEP 6: MATCH
     const found = db.some(row =>
       row.name === name && row.message == msg
     );
@@ -94,7 +106,7 @@ app.post("/data", async (req, res) => {
     });
 
   } catch (err) {
-    console.error(err);
+    console.error("Server Error:", err);
     res.status(500).send("Server Error");
   }
 });
