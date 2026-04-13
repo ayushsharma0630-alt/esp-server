@@ -1,117 +1,106 @@
-const express = require("express");
-const crypto = require("crypto");
-const fs = require("fs");
-const path = require("path");
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include "mbedtls/aes.h"
 
-const app = express();
-app.use(express.json());
+const char* ssid = "Ayush";
+const char* password = "Galaxy21";
 
-// 🔹 Supabase
-const SUPABASE_URL = "https://kxoztgtalloqqcaboqnb.supabase.co";
-const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt4b3p0Z3RhbGxvcXFjYWJvcW5iIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYwMTY4ODIsImV4cCI6MjA5MTU5Mjg4Mn0.7qPHmJrv0j3bBfBa7ktNJ7DV3hg8gurOzzsdaXa0keY";
+const char* serverUrl = "https://esp-server-t1t3.onrender.com/data";
 
-// 🔐 Try loading private key (RSA optional)
-let privateKey = null;
+// 🔐 AES Encrypt Function
+String aesEncrypt(String input) {
+  byte key[16] = {
+  '1','2','3','4','5','6','7','8',
+  '9','0','1','2','3','4','5','6'
+};
 
-try {
-    privateKey = fs.readFileSync(
-        path.join(__dirname, "private.pem"),
-        "utf8"
-    );
-    console.log("Private key loaded ✅");
-} catch (err) {
-    console.log("No private.pem found → running AES only ⚠️");
+  mbedtls_aes_context aes;
+  mbedtls_aes_init(&aes);
+  mbedtls_aes_setkey_enc(&aes, key, 128);
+
+  byte inputBlock[16] = {0};
+  byte outputBlock[16] = {0};
+
+  input.getBytes(inputBlock, 16);  // max 16 bytes
+
+  mbedtls_aes_crypt_ecb(&aes, MBEDTLS_AES_ENCRYPT, inputBlock, outputBlock);
+
+  mbedtls_aes_free(&aes);
+
+  // convert to HEX string
+  String encrypted = "";
+  for (int i = 0; i < 16; i++) {
+    if (outputBlock[i] < 16) encrypted += "0";
+    encrypted += String(outputBlock[i], HEX);
+  }
+
+  return encrypted;
 }
 
-// 🔐 AES decrypt
-function decryptAES(encryptedHex, keyStr) {
-    const key = Buffer.from(keyStr);
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
 
-    const encryptedBuffer = Buffer.from(encryptedHex, "hex");
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi");
 
-    const decipher = crypto.createDecipheriv("aes-128-ecb", key, null);
-    decipher.setAutoPadding(false);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
 
-    let decrypted = decipher.update(encryptedBuffer);
-    decrypted = Buffer.concat([decrypted, decipher.final()]);
-
-    return decrypted.toString().replace(/\0/g, "").trim();
+  Serial.println("\nConnected to WiFi!");
+  Serial.print("ESP IP: ");
+  Serial.println(WiFi.localIP());
 }
 
-// 🔹 Home
-app.get("/", (req, res) => {
-    res.send("Server running with AES 🔐");
-});
+void loop() {
 
-// 🔹 Main route
-app.post("/data", async (req, res) => {
-    try {
-        let name, msg;
+  if (WiFi.status() == WL_CONNECTED) {
 
-        // 🔥 If RSA data comes (future use)
-        if (req.body.data && req.body.key && privateKey) {
-            console.log("Using RSA + AES 🔐");
+    // 🔹 Input NAME
+    Serial.println("\nEnter Name:");
+    while (!Serial.available());
+    String name = Serial.readStringUntil('\n');
+    name.trim();
 
-            // 🔐 decrypt AES key using RSA
-            const aesKey = crypto.privateDecrypt(
-                {
-                    key: privateKey,
-                    padding: crypto.constants.RSA_PKCS1_PADDING
-                },
-                Buffer.from(req.body.key, "base64")
-            ).toString("utf-8");
+    // 🔹 Input ID
+    Serial.println("Enter ID:");
+    while (!Serial.available());
+    String msg = Serial.readStringUntil('\n');
+    msg.trim();
 
-            // 🔐 decrypt data
-            const decrypted = decryptAES(req.body.data, aesKey);
-            [name, msg] = decrypted.split(",").map(v => v.trim());
+    // 🔹 Combine
+    String combined = name + "," + msg;
 
-        } else {
-            // 🔥 Current AES-only mode
-            const encrypted = req.body.message.toString().trim();
+    // 🔐 Encrypt
+    String encrypted = aesEncrypt(combined);
 
-            const decrypted = decryptAES(encrypted, "1234567890123456");
+    HTTPClient http;
+    http.begin(serverUrl);
+    http.addHeader("Content-Type", "application/json");
 
-            [name, msg] = decrypted.split(",").map(v => v.trim());
-        }
+    // 🔹 Send encrypted
+    String json = "{\"message\":\"" + encrypted + "\"}";
 
-        console.log("Final:", { name, msg });
+    int responseCode = http.POST(json);
+    String response = http.getString();
 
-        // 🔹 Fetch DB
-        const response = await fetch(
-            `${SUPABASE_URL}/rest/v1/messages`,
-            {
-                method: "GET",
-                headers: {
-                    "apikey": SUPABASE_KEY,
-                    "Authorization": `Bearer ${SUPABASE_KEY}`,
-                    "Content-Type": "application/json"
-                }
-            }
-        );
+    Serial.println("\n--- RESULT ---");
+    Serial.print("Original: ");
+    Serial.println(combined);
 
-        const data = await response.json();
+    Serial.print("Encrypted: ");
+    Serial.println(encrypted);
 
-        if (!Array.isArray(data)) {
-            return res.json({ reply: "DB ERROR" });
-        }
+    Serial.print("Response Code: ");
+    Serial.println(responseCode);
 
-        const found = data.some(row =>
-            row.name?.toLowerCase() === name.toLowerCase() &&
-            row.message?.toString().trim() === msg
-        );
+    Serial.print("Server Reply: ");
+    Serial.println(response);
 
-        if (found) {
-            res.json({ reply: "VALID USER ✅" });
-        } else {
-            res.json({ reply: "INVALID USER ❌" });
-        }
+    http.end();
 
-    } catch (err) {
-        console.error("Server Error:", err);
-        res.status(500).send("Server Error");
-    }
-});
-
-// 🔹 Start server
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("Server running"));
+    delay(2000);
+  }
+}
