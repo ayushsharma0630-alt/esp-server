@@ -8,7 +8,7 @@ app.use(express.json());
 
 // 🔹 Supabase
 const SUPABASE_URL = "https://kxoztgtalloqqcaboqnb.supabase.co";
-const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt4b3p0Z3RhbGxvcXFjYWJvcW5iIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYwMTY4ODIsImV4cCI6MjA5MTU5Mjg4Mn0.7qPHmJrv0j3bBfBa7ktNJ7DV3hg8gurOzzsdaXa0keY";
+const SUPABASE_KEY = "YOUR_SUPABASE_KEY";
 
 // 🔐 Load private key
 const privateKey = fs.readFileSync(
@@ -32,15 +32,35 @@ function decryptAES(encryptedHex, keyStr) {
 
 // 🔹 Home
 app.get("/", (req, res) => {
-  res.send("Hybrid Encryption Server 🔐");
+  res.send("Secure Server Running 🔐");
 });
 
-// 🔹 Main route
+// 🔹 MAIN ROUTE
 app.post("/data", async (req, res) => {
   try {
-    const { data, key } = req.body;
+    const { device_id, token, data, key } = req.body;
 
-    // 🔐 RSA decrypt AES key
+    // 🔐 STEP 1: DEVICE AUTH
+    const deviceRes = await fetch(`${SUPABASE_URL}/rest/v1/devices`, {
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${SUPABASE_KEY}`
+      }
+    });
+
+    const devices = await deviceRes.json();
+
+    const validDevice = devices.some(d =>
+      d.device_id === device_id && d.token === token
+    );
+
+    if (!validDevice) {
+      return res.json({ reply: "UNAUTHORIZED DEVICE ❌" });
+    }
+
+    console.log("Device verified ✅");
+
+    // 🔐 STEP 2: RSA decrypt AES key
     const aesKey = crypto.privateDecrypt(
       {
         key: privateKey,
@@ -49,38 +69,29 @@ app.post("/data", async (req, res) => {
       Buffer.from(key, "base64")
     ).toString("utf-8");
 
-    // 🔐 AES decrypt data
+    // 🔐 STEP 3: AES decrypt data
     const decrypted = decryptAES(data, aesKey);
-
     const [name, msg] = decrypted.split(",").map(v => v.trim());
 
     console.log("Final:", { name, msg });
 
-    // 🔹 Fetch DB
-    const response = await fetch(
-      `${SUPABASE_URL}/rest/v1/messages`,
-      {
-        method: "GET",
-        headers: {
-          "apikey": SUPABASE_KEY,
-          "Authorization": `Bearer ${SUPABASE_KEY}`,
-          "Content-Type": "application/json"
-        }
+    // 🔹 STEP 4: CHECK DATABASE
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/messages`, {
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${SUPABASE_KEY}`
       }
-    );
+    });
 
     const db = await response.json();
 
     const found = db.some(row =>
-      row.name?.toLowerCase() === name.toLowerCase() &&
-      row.message?.toString().trim() === msg
+      row.name === name && row.message == msg
     );
 
-    if (found) {
-      res.json({ reply: "VALID USER ✅" });
-    } else {
-      res.json({ reply: "INVALID USER ❌" });
-    }
+    res.json({
+      reply: found ? "VALID USER ✅" : "INVALID USER ❌"
+    });
 
   } catch (err) {
     console.error(err);
