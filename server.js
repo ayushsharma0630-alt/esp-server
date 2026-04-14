@@ -1,70 +1,56 @@
-const express = require("express");
-const crypto = require("crypto");
-const fs = require("fs");
-const path = require("path");
+import express from "express";
+import fetch from "node-fetch";
+import crypto from "crypto";
 
 const app = express();
 app.use(express.json());
 
-// 🔹 Supabase
-const SUPABASE_URL = "https://kxoztgtalloqqcaboqnb.supabase.co";
-const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt4b3p0Z3RhbGxvcXFjYWJvcW5iIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYwMTY4ODIsImV4cCI6MjA5MTU5Mjg4Mn0.7qPHmJrv0j3bBfBa7ktNJ7DV3hg8gurOzzsdaXa0keY";
+// 🔐 ENV VARIABLES (SET IN RENDER)
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_KEY;
+const PRIVATE_KEY = process.env.PRIVATE_KEY;
 
-// 🔐 Load private key
-const privateKey = fs.readFileSync(
-  path.join(__dirname, "private.pem"),
-  "utf8"
-);
+// 🔐 RSA DECRYPT
+function decryptRSA(encryptedKey) {
+  const buffer = Buffer.from(encryptedKey, "base64");
 
-// 🔐 AES decrypt
-function decryptAES(encryptedHex, keyStr) {
-  const key = Buffer.from(keyStr);
-  const encryptedBuffer = Buffer.from(encryptedHex, "hex");
-
-  const decipher = crypto.createDecipheriv("aes-128-ecb", key, null);
-  decipher.setAutoPadding(false);
-
-  let decrypted = decipher.update(encryptedBuffer);
-  decrypted = Buffer.concat([decrypted, decipher.final()]);
-
-  return decrypted.toString().replace(/\0/g, "").trim();
+  return crypto.privateDecrypt(
+    {
+      key: PRIVATE_KEY,
+      padding: crypto.constants.RSA_PKCS1_PADDING
+    },
+    buffer
+  ).toString();
 }
 
-// 🔹 Home
-app.get("/", (req, res) => {
-  res.send("Server running 🔐");
-});
+// 🔐 AES DECRYPT
+function decryptAES(encryptedHex, keyStr) {
+  const key = Buffer.from(keyStr);
+  const decipher = crypto.createDecipheriv("aes-128-ecb", key, null);
 
-// 🔹 MAIN ROUTE
+  let decrypted = decipher.update(encryptedHex, "hex", "utf8");
+  decrypted += decipher.final("utf8");
+
+  return decrypted;
+}
+
+// 🔥 MAIN ROUTE
 app.post("/data", async (req, res) => {
   try {
     const { device_id, token, data, key } = req.body;
 
-    // 🔥 DEBUG LOGS
-    console.log("Incoming device_id:", device_id);
-    console.log("Incoming token:", token);
-
-    // 🔹 FETCH DEVICES
-    const deviceRes = await fetch(`${SUPABASE_URL}/rest/v1/Devices`, {
-      method: "GET",
+    // 🔹 DEVICE AUTH
+    const devicesRes = await fetch(`${SUPABASE_URL}/rest/v1/Devices`, {
       headers: {
-        "apikey": SUPABASE_KEY,
-        "Authorization": `Bearer ${SUPABASE_KEY}`,
-        "Content-Type": "application/json"
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${SUPABASE_KEY}`
       }
     });
 
-    const devices = await deviceRes.json();
-    console.log("Devices DB:", devices);
+    const devices = await devicesRes.json();
 
-    // 🔥 Ensure array
-    if (!Array.isArray(devices)) {
-      return res.json({ reply: "DEVICE DB ERROR ❌" });
-    }
-
-    // 🔐 DEVICE VALIDATION (FIXED)
     const validDevice = devices.some(d =>
-      d.device_id?.trim().toLowerCase() === device_id?.trim().toLowerCase() &&
+      d.device_id?.trim() === device_id?.trim() &&
       d.token?.trim() === token?.trim()
     );
 
@@ -72,55 +58,47 @@ app.post("/data", async (req, res) => {
       return res.json({ reply: "UNAUTHORIZED DEVICE ❌" });
     }
 
-    console.log("Device verified ✅");
+    console.log("AUTHORIZED DEVICE ✅");
 
-    // 🔐 RSA decrypt AES key
-    const aesKey = crypto.privateDecrypt(
-      {
-        key: privateKey,
-        padding: crypto.constants.RSA_PKCS1_PADDING
-      },
-      Buffer.from(key, "base64")
-    ).toString("utf-8");
-
-    // 🔐 AES decrypt data
+    // 🔐 DECRYPT UID
+    const aesKey = decryptRSA(key);
     const decrypted = decryptAES(data, aesKey);
-    const [name, msg] = decrypted.split(",").map(v => v.trim());
 
-    console.log("Final:", { name, msg });
+    const uid = decrypted.trim().toUpperCase();
+
+    console.log("UID:", uid);
 
     // 🔹 FETCH USERS
-    const response = await fetch(`${SUPABASE_URL}/rest/v1/messages`, {
-      method: "GET",
+    const usersRes = await fetch(`${SUPABASE_URL}/rest/v1/users`, {
       headers: {
-        "apikey": SUPABASE_KEY,
-        "Authorization": `Bearer ${SUPABASE_KEY}`,
-        "Content-Type": "application/json"
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${SUPABASE_KEY}`
       }
     });
 
-    const db = await response.json();
+    const users = await usersRes.json();
 
-    if (!Array.isArray(db)) {
-      return res.json({ reply: "DB ERROR ❌" });
-    }
-
-    // 🔹 MATCH USER
-    const found = db.some(row =>
-      row.name?.trim() === name &&
-      row.message?.toString().trim() === msg
+    const found = users.find(u =>
+      u.uid?.trim().toUpperCase() === uid
     );
 
-    res.json({
-      reply: found ? "VALID USER ✅" : "INVALID USER ❌"
-    });
+    if (found) {
+      return res.json({
+        reply: `VALID USER ✅ | Name: ${found.name} | Roll No: ${found.roll_no}`
+      });
+    } else {
+      return res.json({ reply: "INVALID USER ❌" });
+    }
 
   } catch (err) {
-    console.error("Server Error:", err);
-    res.status(500).send("Server Error");
+    console.log(err);
+    res.json({ reply: "SERVER ERROR ❌" });
   }
 });
 
-// 🔹 Start server
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("Server running"));
+// 🔹 START SERVER
+const PORT = process.env.PORT || 10000;
+
+app.listen(PORT, () => {
+  console.log("Server running...");
+});
