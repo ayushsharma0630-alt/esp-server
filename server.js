@@ -1,36 +1,34 @@
 const express = require("express");
-
 const crypto = require("crypto");
-
 const app = express();
 app.use(express.json());
 
-// 🔐 ENV VARIABLES (SET IN RENDER)
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const PRIVATE_KEY = process.env.PRIVATE_KEY;
 
-// 🔐 RSA DECRYPT
+// 🔐 RSA DECRYPT — OAEP to match mbedtls default on ESP32
 function decryptRSA(encryptedKey) {
   const buffer = Buffer.from(encryptedKey, "base64");
-
   return crypto.privateDecrypt(
     {
       key: PRIVATE_KEY,
-      padding: crypto.constants.RSA_PKCS1_PADDING
+      padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
+      oaepHash: "sha1"
     },
     buffer
-  ).toString();
+  ).toString("utf8").trim();   // trim any null padding
 }
 
 // 🔐 AES DECRYPT
 function decryptAES(encryptedHex, keyStr) {
-  const key = Buffer.from(keyStr);
+  // keyStr must be exactly 16 bytes for AES-128
+  const key = Buffer.from(keyStr.substring(0, 16), "utf8");
   const decipher = crypto.createDecipheriv("aes-128-ecb", key, null);
+  decipher.setAutoPadding(true);
 
   let decrypted = decipher.update(encryptedHex, "hex", "utf8");
   decrypted += decipher.final("utf8");
-
   return decrypted;
 }
 
@@ -39,6 +37,10 @@ app.post("/data", async (req, res) => {
   try {
     const { device_id, token, data, key } = req.body;
 
+    if (!device_id || !token || !data || !key) {
+      return res.json({ reply: "MISSING FIELDS ❌" });
+    }
+
     // 🔹 DEVICE AUTH
     const devicesRes = await fetch(`${SUPABASE_URL}/rest/v1/Devices`, {
       headers: {
@@ -46,7 +48,6 @@ app.post("/data", async (req, res) => {
         Authorization: `Bearer ${SUPABASE_KEY}`
       }
     });
-
     const devices = await devicesRes.json();
 
     const validDevice = devices.some(d =>
@@ -57,15 +58,14 @@ app.post("/data", async (req, res) => {
     if (!validDevice) {
       return res.json({ reply: "UNAUTHORIZED DEVICE ❌" });
     }
-
     console.log("AUTHORIZED DEVICE ✅");
 
-    // 🔐 DECRYPT UID
+    // 🔐 DECRYPT
     const aesKey = decryptRSA(key);
+    console.log("AES key length:", aesKey.length, "| key:", aesKey);
+
     const decrypted = decryptAES(data, aesKey);
-
-    const uid = decrypted.trim().toUpperCase();
-
+    const uid = decrypted.replace(/\0/g, "").trim().toUpperCase();  // strip null bytes
     console.log("UID:", uid);
 
     // 🔹 FETCH USERS
@@ -75,7 +75,6 @@ app.post("/data", async (req, res) => {
         Authorization: `Bearer ${SUPABASE_KEY}`
       }
     });
-
     const users = await usersRes.json();
 
     const found = users.find(u =>
@@ -91,14 +90,10 @@ app.post("/data", async (req, res) => {
     }
 
   } catch (err) {
-    console.log(err);
-    res.json({ reply: "SERVER ERROR ❌" });
+    console.error("Decrypt error:", err.message);
+    res.json({ reply: "SERVER ERROR ❌", error: err.message });
   }
 });
 
-// 🔹 START SERVER
 const PORT = process.env.PORT || 10000;
-
-app.listen(PORT, () => {
-  console.log("Server running...");
-});
+app.listen(PORT, () => console.log("Server running..."));
