@@ -21,13 +21,14 @@ function decryptRSA(encryptedKey) {
 
 // 🔐 AES DECRYPT
 function decryptAES(encryptedHex, keyStr) {
-  // keyStr must be exactly 16 bytes for AES-128
   const key = Buffer.from(keyStr.substring(0, 16), "utf8");
+
   const decipher = crypto.createDecipheriv("aes-128-ecb", key, null);
-  decipher.setAutoPadding(true);
+  decipher.setAutoPadding(false);   // ✅ FIX
 
   let decrypted = decipher.update(encryptedHex, "hex", "utf8");
   decrypted += decipher.final("utf8");
+
   return decrypted;
 }
 
