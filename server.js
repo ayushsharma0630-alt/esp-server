@@ -13,11 +13,10 @@ function decryptRSA(encryptedKey) {
   return crypto.privateDecrypt(
     {
       key: PRIVATE_KEY,
-      padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
-      oaepHash: "sha1"
+      padding: crypto.constants.RSA_PKCS1_PADDING  // ← this line is critical
     },
     buffer
-  ).toString("utf8").trim();   // trim any null padding
+  ).toString();
 }
 
 // 🔐 AES DECRYPT
