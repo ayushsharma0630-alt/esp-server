@@ -1,9 +1,18 @@
 const express = require("express");
 const crypto = require("crypto");
-const fetch = require("node-fetch"); // required on some Node versions
-const app = express();
+const fetch = require("node-fetch");
 
+const app = express();
 app.use(express.json());
+
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_KEY;
+const PRIVATE_KEY = process.env.PRIVATE_KEY?.replace(/\\n/g, "\n");
+
+if (!PRIVATE_KEY) {
+  console.error("PRIVATE_KEY missing ❌");
+  process.exit(1);
+}
 
 // 🔐 ENV
 const SUPABASE_URL = process.env.SUPABASE_URL;
