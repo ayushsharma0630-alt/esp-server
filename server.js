@@ -1,30 +1,38 @@
 const express = require("express");
 const crypto = require("crypto");
+const fetch = require("node-fetch"); // required on some Node versions
 const app = express();
+
 app.use(express.json());
 
+// 🔐 ENV
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
-const PRIVATE_KEY = process.env.PRIVATE_KEY;
 
-// 🔐 RSA DECRYPT — OAEP to match mbedtls default on ESP32
+// FIX: handle newline issue from env
+const PRIVATE_KEY = process.env.PRIVATE_KEY?.replace(/\\n/g, "\n");
+
+
+// 🔐 RSA DECRYPT (PKCS1 v1.5 — matches ESP32)
 function decryptRSA(encryptedKey) {
   const buffer = Buffer.from(encryptedKey, "base64");
+
   return crypto.privateDecrypt(
     {
       key: PRIVATE_KEY,
-      padding: crypto.constants.RSA_PKCS1_PADDING  // ← this line is critical
+      padding: crypto.constants.RSA_PKCS1_PADDING
     },
     buffer
   ).toString();
 }
 
-// 🔐 AES DECRYPT
+
+// 🔐 AES DECRYPT (ECB — same as your Arduino)
 function decryptAES(encryptedHex, keyStr) {
   const key = Buffer.from(keyStr.substring(0, 16), "utf8");
 
   const decipher = crypto.createDecipheriv("aes-128-ecb", key, null);
-  decipher.setAutoPadding(false);   // ✅ FIX
+  decipher.setAutoPadding(true);
 
   let decrypted = decipher.update(encryptedHex, "hex", "utf8");
   decrypted += decipher.final("utf8");
@@ -32,68 +40,101 @@ function decryptAES(encryptedHex, keyStr) {
   return decrypted;
 }
 
+
 // 🔥 MAIN ROUTE
 app.post("/data", async (req, res) => {
   try {
     const { device_id, token, data, key } = req.body;
 
+    // ✅ validate input
     if (!device_id || !token || !data || !key) {
       return res.json({ reply: "MISSING FIELDS ❌" });
     }
 
-    // 🔹 DEVICE AUTH
-    const devicesRes = await fetch(`${SUPABASE_URL}/rest/v1/Devices`, {
-      headers: {
-        apikey: SUPABASE_KEY,
-        Authorization: `Bearer ${SUPABASE_KEY}`
-      }
-    });
-    const devices = await devicesRes.json();
+    const cleanDevice = device_id.trim();
+    const cleanToken = token.trim();
 
-    const validDevice = devices.some(d =>
-      d.device_id?.trim() === device_id?.trim() &&
-      d.token?.trim() === token?.trim()
+    // 🔹 DEVICE AUTH (FIX: query instead of fetch-all)
+    const devRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/Devices?device_id=eq.${encodeURIComponent(cleanDevice)}&token=eq.${encodeURIComponent(cleanToken)}`,
+      {
+        headers: {
+          apikey: SUPABASE_KEY,
+          Authorization: `Bearer ${SUPABASE_KEY}`
+        }
+      }
     );
 
-    if (!validDevice) {
+    const devices = await devRes.json();
+
+    if (!Array.isArray(devices) || devices.length === 0) {
       return res.json({ reply: "UNAUTHORIZED DEVICE ❌" });
     }
+
     console.log("AUTHORIZED DEVICE ✅");
 
     // 🔐 DECRYPT
-    const aesKey = decryptRSA(key);
-    console.log("AES key length:", aesKey.length, "| key:", aesKey);
+    let aesKey, decrypted;
 
-    const decrypted = decryptAES(data, aesKey);
-    const uid = decrypted.replace(/\0/g, "").trim().toUpperCase();  // strip null bytes
-    console.log("UID:", uid);
+    try {
+      aesKey = decryptRSA(key);
+      console.log("AES key length:", aesKey.length);
 
-    // 🔹 FETCH USERS
-    const usersRes = await fetch(`${SUPABASE_URL}/rest/v1/users`, {
-      headers: {
-        apikey: SUPABASE_KEY,
-        Authorization: `Bearer ${SUPABASE_KEY}`
+      decrypted = decryptAES(data, aesKey);
+    } catch (e) {
+      console.error("Decrypt failed:", e.message);
+      return res.json({ reply: "DECRYPT ERROR ❌", error: e.message });
+    }
+
+    // ✅ FIX: normalize UID properly
+    const uid = decrypted
+      .replace(/\0/g, "")   // remove null bytes
+      .trim()
+      .toUpperCase();
+
+    console.log("UID:", uid, "| length:", uid.length);
+
+
+    // 🔹 FETCH USER (FIX: query instead of fetch-all)
+    const userRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/users?uid=eq.${encodeURIComponent(uid)}`,
+      {
+        headers: {
+          apikey: SUPABASE_KEY,
+          Authorization: `Bearer ${SUPABASE_KEY}`
+        }
       }
-    });
-    const users = await usersRes.json();
-
-    const found = users.find(u =>
-      u.uid?.trim().toUpperCase() === uid
     );
 
-    if (found) {
+    const users = await userRes.json();
+
+    if (Array.isArray(users) && users.length > 0) {
+      const u = users[0];
+
       return res.json({
-        reply: `VALID USER ✅ | Name: ${found.name} | Roll No: ${found.roll_no}`
+        reply: `VALID USER ✅ | Name: ${u.name} | Roll No: ${u.roll_no}`
       });
     } else {
       return res.json({ reply: "INVALID USER ❌" });
     }
 
   } catch (err) {
-    console.error("Decrypt error:", err.message);
-    res.json({ reply: "SERVER ERROR ❌", error: err.message });
+    console.error("SERVER ERROR:", err.stack || err.message);
+
+    res.json({
+      reply: "SERVER ERROR ❌",
+      error: err.message
+    });
   }
 });
 
+
+// 🔹 HEALTH ROUTE (prevents Render sleep issues)
+app.get("/health", (req, res) => {
+  res.json({ status: "ok" });
+});
+
+
+// 🔹 START
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log("Server running..."));
+app.listen(PORT, () => console.log("Server running on port", PORT));
