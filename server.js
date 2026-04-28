@@ -104,7 +104,7 @@ app.post("/data", async (req, res) => {
       const u = users[0];
 
       return res.json({
-        reply: `VALID USER ✅ | Name: ${u.name} | Roll No: ${u.roll_no}`
+        reply: `VALID USER ✅ | Name: ${u.name} | Roll No: ${u.roll_no} | ${u.Access}`
       });
     } else {
       return res.json({ reply: "INVALID USER ❌" });
