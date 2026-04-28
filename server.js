@@ -5,6 +5,7 @@ const fetch = require("node-fetch");
 const app = express();
 app.use(express.json());
 
+// 🔐 ENV (ONLY ONCE)
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const PRIVATE_KEY = process.env.PRIVATE_KEY?.replace(/\\n/g, "\n");
@@ -14,15 +15,7 @@ if (!PRIVATE_KEY) {
   process.exit(1);
 }
 
-// 🔐 ENV
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_KEY;
-
-// FIX: handle newline issue from env
-const PRIVATE_KEY = process.env.PRIVATE_KEY?.replace(/\\n/g, "\n");
-
-
-// 🔐 RSA DECRYPT (PKCS1 v1.5 — matches ESP32)
+// 🔐 RSA DECRYPT
 function decryptRSA(encryptedKey) {
   const buffer = Buffer.from(encryptedKey, "base64");
 
@@ -35,8 +28,7 @@ function decryptRSA(encryptedKey) {
   ).toString();
 }
 
-
-// 🔐 AES DECRYPT (ECB — same as your Arduino)
+// 🔐 AES DECRYPT
 function decryptAES(encryptedHex, keyStr) {
   const key = Buffer.from(keyStr.substring(0, 16), "utf8");
 
@@ -49,13 +41,11 @@ function decryptAES(encryptedHex, keyStr) {
   return decrypted;
 }
 
-
 // 🔥 MAIN ROUTE
 app.post("/data", async (req, res) => {
   try {
     const { device_id, token, data, key } = req.body;
 
-    // ✅ validate input
     if (!device_id || !token || !data || !key) {
       return res.json({ reply: "MISSING FIELDS ❌" });
     }
@@ -63,7 +53,7 @@ app.post("/data", async (req, res) => {
     const cleanDevice = device_id.trim();
     const cleanToken = token.trim();
 
-    // 🔹 DEVICE AUTH (FIX: query instead of fetch-all)
+    // 🔹 DEVICE AUTH
     const devRes = await fetch(
       `${SUPABASE_URL}/rest/v1/Devices?device_id=eq.${encodeURIComponent(cleanDevice)}&token=eq.${encodeURIComponent(cleanToken)}`,
       {
@@ -87,24 +77,17 @@ app.post("/data", async (req, res) => {
 
     try {
       aesKey = decryptRSA(key);
-      console.log("AES key length:", aesKey.length);
-
       decrypted = decryptAES(data, aesKey);
     } catch (e) {
       console.error("Decrypt failed:", e.message);
       return res.json({ reply: "DECRYPT ERROR ❌", error: e.message });
     }
 
-    // ✅ FIX: normalize UID properly
-    const uid = decrypted
-      .replace(/\0/g, "")   // remove null bytes
-      .trim()
-      .toUpperCase();
+    const uid = decrypted.replace(/\0/g, "").trim().toUpperCase();
 
-    console.log("UID:", uid, "| length:", uid.length);
+    console.log("UID:", uid);
 
-
-    // 🔹 FETCH USER (FIX: query instead of fetch-all)
+    // 🔹 USER CHECK
     const userRes = await fetch(
       `${SUPABASE_URL}/rest/v1/users?uid=eq.${encodeURIComponent(uid)}`,
       {
@@ -128,7 +111,7 @@ app.post("/data", async (req, res) => {
     }
 
   } catch (err) {
-    console.error("SERVER ERROR:", err.stack || err.message);
+    console.error("SERVER ERROR:", err);
 
     res.json({
       reply: "SERVER ERROR ❌",
@@ -137,12 +120,10 @@ app.post("/data", async (req, res) => {
   }
 });
 
-
-// 🔹 HEALTH ROUTE (prevents Render sleep issues)
+// 🔹 HEALTH
 app.get("/health", (req, res) => {
   res.json({ status: "ok" });
 });
-
 
 // 🔹 START
 const PORT = process.env.PORT || 10000;
