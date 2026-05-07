@@ -29,13 +29,52 @@ function decryptRSA(encryptedKey) {
 }
 
 // 🔐 AES DECRYPT
-function decryptAES(encryptedHex, keyStr) {
-  const key = Buffer.from(keyStr.substring(0, 16), "utf8");
+function decryptAES(encryptedBase64, keyStr) {
 
-  const decipher = crypto.createDecipheriv("aes-128-ecb", key, null);
-  decipher.setAutoPadding(true);
+  // AES-256 key
+  const key = Buffer.from(keyStr.substring(0, 32), "utf8");
 
-  let decrypted = decipher.update(encryptedHex, "hex", "utf8");
+  // Base64URL -> Base64
+  encryptedBase64 = encryptedBase64
+    .replace(/-/g, "+")
+    .replace(/_/g, "/");
+
+  while (encryptedBase64.length % 4 !== 0) {
+    encryptedBase64 += "=";
+  }
+
+  // Decode
+  const encryptedBuffer = Buffer.from(encryptedBase64, "base64");
+
+  // FORMAT:
+  // [12 byte IV][ciphertext][16 byte authTag]
+
+  const iv = encryptedBuffer.subarray(0, 12);
+
+  const authTag = encryptedBuffer.subarray(
+    encryptedBuffer.length - 16
+  );
+
+  const ciphertext = encryptedBuffer.subarray(
+    12,
+    encryptedBuffer.length - 16
+  );
+
+  // AES-256-GCM
+  const decipher = crypto.createDecipheriv(
+    "aes-256-gcm",
+    key,
+    iv
+  );
+
+  decipher.setAuthTag(authTag);
+
+  let decrypted = decipher.update(
+    ciphertext,
+    null,
+    "utf8"
+  );
+
   decrypted += decipher.final("utf8");
 
   return decrypted;
