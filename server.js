@@ -1,73 +1,52 @@
 const express = require("express");
 const crypto = require("crypto");
 
-
 const app = express();
+
 app.use(express.json());
 
-// 🔐 ENV (ONLY ONCE)
+// ================= ENV =================
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
-const PRIVATE_KEY = process.env.PRIVATE_KEY?.replace(/\\n/g, "\n");
 
-if (!PRIVATE_KEY) {
-  console.error("PRIVATE_KEY missing ❌");
+// API AES KEY
+const API_KEY_HEX = process.env.API_ENCRYPTION_KEY;
+
+if (!API_KEY_HEX) {
+
+  console.error("API_ENCRYPTION_KEY missing ❌");
+
   process.exit(1);
 }
 
-// 🔐 RSA DECRYPT
-function decryptRSA(encryptedKey) {
-  const buffer = Buffer.from(encryptedKey, "base64");
+const apiKey = Buffer.from(API_KEY_HEX, "hex");
 
-  return crypto.privateDecrypt(
-    {
-      key: PRIVATE_KEY,
-      padding: crypto.constants.RSA_PKCS1_PADDING
-    },
-    buffer
-  ).toString();
-}
+// =====================================================
+// AES-256-GCM DECRYPT
+// FORMAT:
+// [12-byte IV][16-byte TAG][ciphertext]
+// =====================================================
+function decryptAES(encryptedBase64) {
 
-// 🔐 AES DECRYPT
-function decryptAES(encryptedBase64, keyStr) {
-
-  // AES-256 key
-  const key = Buffer.from(
-    keyStr.substring(0, 32),
-    "utf8"
-  );
-
-  // Base64URL -> Base64
-  encryptedBase64 = encryptedBase64
-    .replace(/-/g, "+")
-    .replace(/_/g, "/");
-
-  while (encryptedBase64.length % 4 !== 0) {
-    encryptedBase64 += "=";
-  }
-
-  // Decode
+  // BASE64 DECODE
   const encryptedBuffer = Buffer.from(
     encryptedBase64,
     "base64"
   );
 
-  // FORMAT:
-  // [12 byte IV][16 byte TAG][ciphertext]
-
+  // EXTRACT IV
   const iv = encryptedBuffer.subarray(0, 12);
 
-  const authTag = encryptedBuffer.subarray(
-    12,
-    28
-  );
+  // EXTRACT TAG
+  const authTag = encryptedBuffer.subarray(12, 28);
 
+  // EXTRACT CIPHERTEXT
   const ciphertext = encryptedBuffer.subarray(28);
 
-  // AES-256-GCM
+  // CREATE DECIPHER
   const decipher = crypto.createDecipheriv(
     "aes-256-gcm",
-    key,
+    apiKey,
     iv
   );
 
@@ -84,19 +63,79 @@ function decryptAES(encryptedBase64, keyStr) {
   return decrypted;
 }
 
-// 🔥 MAIN ROUTE
+// =====================================================
+// MAIN ROUTE
+// =====================================================
 app.post("/data", async (req, res) => {
-  try {
-    const { device_id, token, data, key } = req.body;
 
-    if (!device_id || !token || !data || !key) {
-      return res.json({ reply: "MISSING FIELDS ❌" });
+  try {
+
+    // ================= GET ENCRYPTED PAYLOAD =================
+    const { payload } = req.body;
+
+    if (!payload) {
+
+      return res.json({
+        reply: "MISSING PAYLOAD ❌"
+      });
     }
 
-    const cleanDevice = device_id.trim();
-    const cleanToken = token.trim();
+    // ================= DECRYPT JSON =================
+    let decryptedJson;
 
-    // 🔹 DEVICE AUTH
+    try {
+
+      decryptedJson = decryptAES(payload);
+
+    } catch (e) {
+
+      console.error("AES DECRYPT FAILED:", e.message);
+
+      return res.json({
+        reply: "DECRYPT ERROR ❌",
+        error: e.message
+      });
+    }
+
+    console.log("DECRYPTED JSON:");
+    console.log(decryptedJson);
+
+    // ================= PARSE JSON =================
+    const parsed = JSON.parse(decryptedJson);
+
+    const {
+      uid,
+      nfcid,
+      device_id,
+      token
+    } = parsed;
+
+    // ================= FIELD CHECK =================
+    if (
+      !uid ||
+      !nfcid ||
+      !device_id ||
+      !token
+    ) {
+
+      return res.json({
+        reply: "MISSING FIELDS ❌"
+      });
+    }
+
+    const cleanUID = uid.trim().toUpperCase();
+
+    const cleanNfcid = nfcid
+      .trim()
+      .toUpperCase();
+
+    const cleanDevice = device_id
+      .trim();
+
+    const cleanToken = token
+      .trim();
+
+    // ================= DEVICE AUTH =================
     const devRes = await fetch(
       `${SUPABASE_URL}/rest/v1/Devices?device_id=eq.${encodeURIComponent(cleanDevice)}&token=eq.${encodeURIComponent(cleanToken)}`,
       {
@@ -109,30 +148,21 @@ app.post("/data", async (req, res) => {
 
     const devices = await devRes.json();
 
-    if (!Array.isArray(devices) || devices.length === 0) {
-      return res.json({ reply: "UNAUTHORIZED DEVICE ❌" });
+    if (
+      !Array.isArray(devices) ||
+      devices.length === 0
+    ) {
+
+      return res.json({
+        reply: "UNAUTHORIZED DEVICE ❌"
+      });
     }
 
     console.log("AUTHORIZED DEVICE ✅");
 
-    // 🔐 DECRYPT
-    let aesKey, decrypted;
-
-    try {
-      aesKey = decryptRSA(key);
-      decrypted = decryptAES(data, aesKey);
-    } catch (e) {
-      console.error("Decrypt failed:", e.message);
-      return res.json({ reply: "DECRYPT ERROR ❌", error: e.message });
-    }
-
-    const uid = decrypted.replace(/\0/g, "").trim().toUpperCase();
-
-    console.log("UID:", uid);
-
-    // 🔹 USER CHECK
+    // ================= USER CHECK =================
     const userRes = await fetch(
-      `${SUPABASE_URL}/rest/v1/users?uid=eq.${encodeURIComponent(uid)}`,
+      `${SUPABASE_URL}/rest/v1/users?uid=eq.${encodeURIComponent(cleanUID)}&nfcid=eq.${encodeURIComponent(cleanNfcid)}`,
       {
         headers: {
           apikey: SUPABASE_KEY,
@@ -143,31 +173,69 @@ app.post("/data", async (req, res) => {
 
     const users = await userRes.json();
 
-    if (Array.isArray(users) && users.length > 0) {
+    // ================= VALID USER =================
+    if (
+      Array.isArray(users) &&
+      users.length > 0
+    ) {
+
       const u = users[0];
 
       return res.json({
-        reply: `VALID USER ✅ | Name: ${u.name} | Roll No: ${u.roll_no} | ${u.Access}`
+
+        status: "valid",
+
+        reply:
+          `VALID USER ✅ | ` +
+          `Name: ${u.name} | ` +
+          `Roll No: ${u.roll_no} | ` +
+          `${u.Access}`
       });
-    } else {
-      return res.json({ reply: "INVALID USER ❌" });
+    }
+
+    // ================= INVALID USER =================
+    else {
+
+      return res.json({
+
+        status: "invalid",
+
+        reply: "INVALID USER ❌"
+      });
     }
 
   } catch (err) {
+
     console.error("SERVER ERROR:", err);
 
-    res.json({
+    return res.json({
+
       reply: "SERVER ERROR ❌",
+
       error: err.message
     });
   }
 });
 
-// 🔹 HEALTH
+// =====================================================
+// HEALTH
+// =====================================================
 app.get("/health", (req, res) => {
-  res.json({ status: "ok" });
+
+  res.json({
+    status: "ok"
+  });
 });
 
-// 🔹 START
+// =====================================================
+// START SERVER
+// =====================================================
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log("Server running on port", PORT));
+
+app.listen(PORT, () => {
+
+  console.log(
+    "Server running on port",
+    PORT
+  );
+});
