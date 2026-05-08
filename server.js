@@ -32,7 +32,10 @@ function decryptRSA(encryptedKey) {
 function decryptAES(encryptedBase64, keyStr) {
 
   // AES-256 key
-  const key = Buffer.from(keyStr.substring(0, 32), "utf8");
+  const key = Buffer.from(
+    keyStr.substring(0, 32),
+    "utf8"
+  );
 
   // Base64URL -> Base64
   encryptedBase64 = encryptedBase64
@@ -44,21 +47,22 @@ function decryptAES(encryptedBase64, keyStr) {
   }
 
   // Decode
-  const encryptedBuffer = Buffer.from(encryptedBase64, "base64");
+  const encryptedBuffer = Buffer.from(
+    encryptedBase64,
+    "base64"
+  );
 
   // FORMAT:
-  // [12 byte IV][ciphertext][16 byte authTag]
+  // [12 byte IV][16 byte TAG][ciphertext]
 
   const iv = encryptedBuffer.subarray(0, 12);
 
   const authTag = encryptedBuffer.subarray(
-    encryptedBuffer.length - 16
+    12,
+    28
   );
 
-  const ciphertext = encryptedBuffer.subarray(
-    12,
-    encryptedBuffer.length - 16
-  );
+  const ciphertext = encryptedBuffer.subarray(28);
 
   // AES-256-GCM
   const decipher = crypto.createDecipheriv(
